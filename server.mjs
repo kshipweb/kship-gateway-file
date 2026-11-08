@@ -8,7 +8,7 @@ const UPSTREAM_TIMEOUT_MS = 15_000;
 const DEFAULT_PAGE_SIZE = 100;
 const DOMAIN_PATTERN = /^(?=.{1,253}$)(?!.*\.\.)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const ACCOUNT = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
-const WHMCS_ACTIONS = new Set(["GetClients", "GetClientsProducts", "GetClientsDomains", "GetInvoices"]);
+const WHMCS_ACTIONS = new Set(["GetClients", "GetClientsProducts", "GetClientsDomains", "GetInvoices", "GetInvoice"]);
 const RELAY_PATHS = new Set(["/v1/relay/whmcs", "/v1/relay/whm"]);
 const DOMAIN_PATHS = new Set([
   "/v1/resellerclub/domains/list",
