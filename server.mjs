@@ -318,15 +318,30 @@ function parseContact(body) {
 async function setTransferLock(config, domain, locked) {
   const orderId = await orderIdForDomain(config, domain);
   const path = locked ? "/api/domains/enable-theft-protection.json" : "/api/domains/disable-theft-protection.json";
-  await fetchRegistrarJson(config, path, { "order-id": orderId });
+  await fetchRegistrarPost(config, path, { "order-id": orderId });
   return { transferLock: locked };
 }
 
 async function setNameservers(config, domain, nameservers) {
   const orderId = await orderIdForDomain(config, domain);
-  const search = new URLSearchParams({ "order-id": orderId });
-  for (const nameserver of nameservers) search.append("ns", nameserver);
-  await fetchRegistrarQuery(config, "/api/domains/modify-ns.json", search);
+  const body = new URLSearchParams({ "order-id": orderId });
+  for (const nameserver of nameservers) body.append("ns", nameserver);
+  body.set("api-key", config.apiKey);
+  body.set("auth-userid", config.resellerId);
+  const upstream = await (config.fetchImpl ?? fetch)("https://httpapi.com/api/domains/modify-ns.json", {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+  });
+  const payload = await upstream.json().catch(() => null);
+  if (!upstream.ok || !payload || (typeof payload === "object" && String(payload.status ?? "").toUpperCase() === "ERROR")) {
+    const message = typeof payload?.message === "string" ? payload.message.slice(0, 180) : "Registrar request failed.";
+    const error = new Error(message);
+    error.statusCode = 502;
+    error.publicMessage = message;
+    throw error;
+  }
   return { nameservers };
 }
 
