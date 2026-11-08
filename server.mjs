@@ -17,6 +17,8 @@ const DOMAIN_PATHS = new Set([
   "/v1/resellerclub/domains/lock",
   "/v1/resellerclub/domains/nameservers",
   "/v1/resellerclub/domains/contact",
+  "/v1/resellerclub/domains/privacy",
+  "/v1/resellerclub/domains/auth-code",
 ]);
 const HOST_PATTERN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
@@ -241,11 +243,21 @@ async function fetchDomainDetails(config, domain) {
   const details = await fetchRegistrarJson(config, "/api/domains/details.json", { "order-id": orderId, options: "All" });
   const name = String(details?.domainname ?? "").trim().toLowerCase().replace(/\.$/, "");
   if (name && name !== domain) throw badRequest("Registrar returned a different domain.");
-  const nameservers = ["ns1", "ns2", "ns3", "ns4"].map((key) => String(details?.[key] ?? "").trim().toLowerCase()).filter(Boolean);
+  const nameservers = ["ns1", "ns2", "ns3", "ns4"]
+    .map((key) => {
+      const value = details?.[key];
+      if (typeof value === "string") return value.trim().toLowerCase();
+      if (value && typeof value === "object") return String(value.hostname ?? value.name ?? "").trim().toLowerCase();
+      return "";
+    })
+    .filter(Boolean);
+  const end = Number(details?.endtime ?? 0);
+  const expiry = end > 1_000_000_000 ? new Date(end * 1000).toISOString().slice(0, 10) : "";
   return {
     orderId: Number(orderId),
     nameservers,
-    transferLock: flagValue(details?.transferlock ?? details?.customerlock),
+    expiry,
+    transferLock: flagValue(details?.transferlock ?? details?.customerlock ?? details?.orderstatus),
     privacy: flagValue(details?.privacyprotection ?? details?.isprivacyprotected),
     contact: contactView(details?.registrantcontact),
   };
@@ -313,6 +325,29 @@ async function updateRegistrant(config, domain, contact) {
     phone: contact.phone,
   });
   return { contact };
+}
+
+async function setPrivacy(config, domain, enabled) {
+  const orderId = await orderIdForDomain(config, domain);
+  await fetchRegistrarJson(config, "/api/domains/modify-privacy-protection.json", {
+    "order-id": orderId,
+    "protect-privacy": enabled ? "true" : "false",
+    reason: "Updated from the account portal.",
+  });
+  return { privacy: enabled };
+}
+
+async function readAuthCode(config, domain) {
+  const orderId = await orderIdForDomain(config, domain);
+  const payload = await fetchRegistrarJson(config, "/api/domains/auth-code.json", { "order-id": orderId });
+  const code = typeof payload === "string" ? payload : String(payload?.authcode ?? payload?.authCode ?? payload?.code ?? "");
+  if (!code || code === "[object Object]") {
+    const error = new Error("The registrar did not return a transfer code.");
+    error.statusCode = 502;
+    error.publicMessage = "The registrar did not return a transfer code.";
+    throw error;
+  }
+  return { authCode: code.slice(0, 64) };
 }
 
 async function relayWhmcs(config, body) {
@@ -434,6 +469,15 @@ export function createGatewayServer(configuration = getConfiguration()) {
       }
       if (requestUrl.pathname === "/v1/resellerclub/domains/contact") {
         sendJson(response, 200, await updateRegistrant(configuration, parseDomain(body), parseContact(body)));
+        return;
+      }
+      if (requestUrl.pathname === "/v1/resellerclub/domains/privacy") {
+        if (typeof body.enabled !== "boolean") throw badRequest("Say whether privacy should be on.");
+        sendJson(response, 200, await setPrivacy(configuration, parseDomain(body), body.enabled));
+        return;
+      }
+      if (requestUrl.pathname === "/v1/resellerclub/domains/auth-code") {
+        sendJson(response, 200, await readAuthCode(configuration, parseDomain(body)));
         return;
       }
       const relayed = requestUrl.pathname === "/v1/relay/whmcs" ? await relayWhmcs(configuration, body) : await relayWhm(configuration, body);
