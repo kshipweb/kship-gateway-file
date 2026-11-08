@@ -143,6 +143,29 @@ async function fetchRegistrarJson(config, path, parameters) {
   return fetchRegistrarQuery(config, path, search);
 }
 
+async function fetchRegistrarPost(config, path, parameters) {
+  const body = new URLSearchParams();
+  for (const [key, value] of Object.entries(parameters)) body.set(key, String(value));
+  body.set("api-key", config.apiKey);
+  body.set("auth-userid", config.resellerId);
+  const upstream = await (config.fetchImpl ?? fetch)(`https://httpapi.com${path}`, {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+  });
+  const payload = await upstream.json().catch(() => null);
+  if (!upstream.ok || !payload || (typeof payload === "object" && String(payload.status ?? "").toUpperCase() === "ERROR")) {
+    const message = typeof payload?.message === "string" ? payload.message.slice(0, 180) : "Registrar request failed.";
+    console.error("ResellerClub request failed", { path, status: upstream.status });
+    const error = new Error(message);
+    error.statusCode = 502;
+    error.publicMessage = message;
+    throw error;
+  }
+  return payload;
+}
+
 async function fetchRegistrarQuery(config, path, search) {
   const url = new URL(`https://httpapi.com${path}`);
   search.set("api-key", config.apiKey);
@@ -312,7 +335,7 @@ async function updateRegistrant(config, domain, contact) {
   const details = await fetchRegistrarJson(config, "/api/domains/details.json", { "order-id": orderId, options: "RegistrantContactDetails" });
   const contactId = numericValue(details?.registrantcontact?.contactid);
   if (!contactId) throw badRequest("Registrant contact was not found.");
-  await fetchRegistrarJson(config, "/api/contacts/modify.json", {
+  await fetchRegistrarPost(config, "/api/contacts/modify.json", {
     "contact-id": contactId,
     name: contact.name,
     company: contact.company || "NA",
@@ -329,7 +352,7 @@ async function updateRegistrant(config, domain, contact) {
 
 async function setPrivacy(config, domain, enabled) {
   const orderId = await orderIdForDomain(config, domain);
-  await fetchRegistrarJson(config, "/api/domains/modify-privacy-protection.json", {
+  await fetchRegistrarPost(config, "/api/domains/modify-privacy-protection.json", {
     "order-id": orderId,
     "protect-privacy": enabled ? "true" : "false",
     reason: "Updated from the account portal.",
@@ -339,12 +362,12 @@ async function setPrivacy(config, domain, enabled) {
 
 async function readAuthCode(config, domain) {
   const orderId = await orderIdForDomain(config, domain);
-  const payload = await fetchRegistrarJson(config, "/api/domains/auth-code.json", { "order-id": orderId });
-  const code = typeof payload === "string" ? payload : String(payload?.authcode ?? payload?.authCode ?? payload?.code ?? "");
-  if (!code || code === "[object Object]") {
-    const error = new Error("The registrar did not return a transfer code.");
-    error.statusCode = 502;
-    error.publicMessage = "The registrar did not return a transfer code.";
+  const details = await fetchRegistrarJson(config, "/api/domains/details.json", { "order-id": orderId, options: "All" });
+  const code = String(details?.domsecret ?? details?.authcode ?? "").trim();
+  if (!code) {
+    const error = new Error("This domain does not have a transfer code on the registrar record.");
+    error.statusCode = 404;
+    error.publicMessage = "This domain does not have a transfer code on the registrar record.";
     throw error;
   }
   return { authCode: code.slice(0, 64) };
